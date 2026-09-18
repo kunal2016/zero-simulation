@@ -41,6 +41,9 @@ body{
 .eyebrow{font-family:var(--mono); font-size:12px; letter-spacing:.14em; text-transform:uppercase; color:var(--accent); font-weight:600; margin:0 0 6px}
 h1{font-size:clamp(26px,4vw,38px); line-height:1.08; margin:0 0 10px; font-weight:700; letter-spacing:-.02em; text-wrap:balance}
 .lede{color:var(--ink-2); max-width:66ch; margin:0 0 4px}
+.byline{font-family:var(--mono); font-size:12px; color:var(--ink-3); margin:8px 0 0}
+.byline a{color:var(--ink-2); text-decoration:none; border-bottom:1px solid var(--border)}
+.byline a:hover{color:var(--accent)}
 a{color:var(--accent)}
 .card{background:var(--surface); border:1px solid var(--border); border-radius:14px; box-shadow:var(--shadow)}
 .section-label{font-family:var(--mono); font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--ink-3); font-weight:600; margin:0 0 12px}
@@ -115,6 +118,7 @@ svg{display:block; width:100%; height:auto; overflow:visible}
       <p class="eyebrow">Distributed training · memory &amp; communication</p>
       <h1>ZeRO Memory Explorer</h1>
       <p class="lede">Dial in a model, an optimizer, and a GPU count, and watch how ZeRO‑0/1/2/3 change the memory each GPU must hold — and what that costs in communication. Every number is the ZeRO accounting, computed live.</p>
+      <p class="byline">by <strong>Kunal Sinha</strong> · <a href="https://github.com/kunal2016/zero-distribution" target="_blank" rel="noopener">source &amp; notebook on GitHub</a></p>
     </div>
     <button class="theme-btn" id="theme" aria-label="Toggle color theme">◐ theme</button>
   </div>
@@ -216,7 +220,7 @@ svg{display:block; width:100%; height:auto; overflow:visible}
     ZeRO‑1 shards the optimizer (<code>K/N</code>), ZeRO‑2 also shards gradients, ZeRO‑3 shards everything (<code>(2P_b+K)/N</code>).
     Communication is the ring‑algorithm volume: <code>2Ψ</code> for ZeRO‑0/1/2 and <code>3Ψ</code> for ZeRO‑3.
     This models <em>model‑state</em> memory only — activations, temporary buffers, and CPU/NVMe offload (ZeRO‑Infinity) are out of scope.
-    Built to accompany the <a href="../">from‑scratch simulation notebook</a>.
+    Built to accompany the <a href="https://github.com/kunal2016/zero-distribution" target="_blank" rel="noopener">from‑scratch simulation notebook</a> by Kunal Sinha.
   </p>
 </div>
 

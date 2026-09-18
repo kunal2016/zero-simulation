@@ -4,6 +4,8 @@
 the ZeRO memory-optimization stages (ZeRO-0/1/2/3) to show how **memory** and
 **computation/communication** change.
 
+**Author:** Kunal Sinha ([@kunal2016](https://github.com/kunal2016)) · **Live widget:** <https://zero-simulation.netlify.app/>
+
 This repository implements everything by hand — no DeepSpeed, no FSDP calls doing
 the work for me. The virtual GPUs are plain Python objects driven by CPU threads,
 each carrying a **byte-accurate memory ledger** and a **communication ledger**, so
@@ -30,7 +32,7 @@ The widget has two modes, toggled at the top:
 - **Analytic · formula** — the idealized ZeRO memory/communication formula, exact in
   the large-model limit, with every optimizer and precision unlocked to explore.
 
-**Live demo:** _<add your Netlify URL here after deploying, e.g. `https://zero-explorer.netlify.app`>_
+**Live demo:** **<https://zero-simulation.netlify.app/>**  ·  **Repo:** <https://github.com/kunal2016/zero-distribution>
 
 **Deploy it (30 seconds):**
 
