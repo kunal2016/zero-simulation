@@ -1,0 +1,11 @@
+# Netlify config — serves the interactive ZeRO widget.
+# Connect this repo to Netlify (or drag the `widget/` folder onto app.netlify.com/drop)
+# and the site root will be widget/index.html.
+[build]
+  publish = "widget"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "no-referrer"

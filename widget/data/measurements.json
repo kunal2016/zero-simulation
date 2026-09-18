@@ -1,0 +1,384 @@
+{
+  "source": "from-scratch NumPy simulation (this notebook)",
+  "model_P": 5313,
+  "config": {
+    "optimizer": "Adam",
+    "optimizer_K": 12,
+    "precision_bytes": 2,
+    "gpus_measured": [
+      1,
+      2,
+      4,
+      8,
+      16,
+      32,
+      64,
+      128,
+      256,
+      512,
+      1024
+    ]
+  },
+  "stages": {
+    "z0": {
+      "1": {
+        "param_bpp": 2.0,
+        "grad_bpp": 2.0,
+        "opt_bpp": 12.0,
+        "resident_bpp": 16.0,
+        "peak_bpp": 16.0,
+        "comm": 0.0
+      },
+      "2": {
+        "param_bpp": 2.0,
+        "grad_bpp": 2.0,
+        "opt_bpp": 12.0,
+        "resident_bpp": 16.0,
+        "peak_bpp": 16.0,
+        "comm": 1.0
+      },
+      "4": {
+        "param_bpp": 2.0,
+        "grad_bpp": 2.0,
+        "opt_bpp": 12.0,
+        "resident_bpp": 16.0,
+        "peak_bpp": 16.0,
+        "comm": 1.5
+      },
+      "8": {
+        "param_bpp": 2.0,
+        "grad_bpp": 2.0,
+        "opt_bpp": 12.0,
+        "resident_bpp": 16.0,
+        "peak_bpp": 16.0,
+        "comm": 1.75
+      },
+      "16": {
+        "param_bpp": 2.0,
+        "grad_bpp": 2.0,
+        "opt_bpp": 12.0,
+        "resident_bpp": 16.0,
+        "peak_bpp": 16.0,
+        "comm": 1.875
+      },
+      "32": {
+        "param_bpp": 2.0,
+        "grad_bpp": 2.0,
+        "opt_bpp": 12.0,
+        "resident_bpp": 16.0,
+        "peak_bpp": 16.0,
+        "comm": 1.9375
+      },
+      "64": {
+        "param_bpp": 2.0,
+        "grad_bpp": 2.0,
+        "opt_bpp": 12.0,
+        "resident_bpp": 16.0,
+        "peak_bpp": 16.0,
+        "comm": 1.96875
+      },
+      "128": {
+        "param_bpp": 2.0,
+        "grad_bpp": 2.0,
+        "opt_bpp": 12.0,
+        "resident_bpp": 16.0,
+        "peak_bpp": 16.0,
+        "comm": 1.98438
+      },
+      "256": {
+        "param_bpp": 2.0,
+        "grad_bpp": 2.0,
+        "opt_bpp": 12.0,
+        "resident_bpp": 16.0,
+        "peak_bpp": 16.0,
+        "comm": 1.99219
+      },
+      "512": {
+        "param_bpp": 2.0,
+        "grad_bpp": 2.0,
+        "opt_bpp": 12.0,
+        "resident_bpp": 16.0,
+        "peak_bpp": 16.0,
+        "comm": 1.99609
+      },
+      "1024": {
+        "param_bpp": 2.0,
+        "grad_bpp": 2.0,
+        "opt_bpp": 12.0,
+        "resident_bpp": 16.0,
+        "peak_bpp": 16.0,
+        "comm": 1.99805
+      }
+    },
+    "z1": {
+      "1": {
+        "param_bpp": 2.0,
+        "grad_bpp": 2.0,
+        "opt_bpp": 12.0,
+        "resident_bpp": 16.0,
+        "peak_bpp": 16.0,
+        "comm": 0.0
+      },
+      "2": {
+        "param_bpp": 2.0,
+        "grad_bpp": 2.0,
+        "opt_bpp": 6.00113,
+        "resident_bpp": 10.00113,
+        "peak_bpp": 10.00113,
+        "comm": 1.0
+      },
+      "4": {
+        "param_bpp": 2.0,
+        "grad_bpp": 2.0,
+        "opt_bpp": 3.00169,
+        "resident_bpp": 7.00169,
+        "peak_bpp": 7.00169,
+        "comm": 1.5
+      },
+      "8": {
+        "param_bpp": 2.0,
+        "grad_bpp": 2.0,
+        "opt_bpp": 1.50198,
+        "resident_bpp": 5.50198,
+        "peak_bpp": 5.50198,
+        "comm": 1.75
+      },
+      "16": {
+        "param_bpp": 2.0,
+        "grad_bpp": 2.0,
+        "opt_bpp": 0.75212,
+        "resident_bpp": 4.75212,
+        "peak_bpp": 4.75212,
+        "comm": 1.875
+      },
+      "32": {
+        "param_bpp": 2.0,
+        "grad_bpp": 2.0,
+        "opt_bpp": 0.37719,
+        "resident_bpp": 4.37719,
+        "peak_bpp": 4.37719,
+        "comm": 1.9375
+      },
+      "64": {
+        "param_bpp": 2.0,
+        "grad_bpp": 2.0,
+        "opt_bpp": 0.18972,
+        "resident_bpp": 4.18972,
+        "peak_bpp": 4.18972,
+        "comm": 1.96875
+      },
+      "128": {
+        "param_bpp": 2.0,
+        "grad_bpp": 2.0,
+        "opt_bpp": 0.09486,
+        "resident_bpp": 4.09486,
+        "peak_bpp": 4.09486,
+        "comm": 1.98438
+      },
+      "256": {
+        "param_bpp": 2.0,
+        "grad_bpp": 2.0,
+        "opt_bpp": 0.04743,
+        "resident_bpp": 4.04743,
+        "peak_bpp": 4.04743,
+        "comm": 1.99219
+      },
+      "512": {
+        "param_bpp": 2.0,
+        "grad_bpp": 2.0,
+        "opt_bpp": 0.02484,
+        "resident_bpp": 4.02484,
+        "peak_bpp": 4.02484,
+        "comm": 1.99609
+      },
+      "1024": {
+        "param_bpp": 2.0,
+        "grad_bpp": 2.0,
+        "opt_bpp": 0.01355,
+        "resident_bpp": 4.01355,
+        "peak_bpp": 4.01355,
+        "comm": 1.99805
+      }
+    },
+    "z2": {
+      "1": {
+        "param_bpp": 2.0,
+        "grad_bpp": 2.0,
+        "opt_bpp": 12.0,
+        "resident_bpp": 16.0,
+        "peak_bpp": 18.0,
+        "comm": 0.0
+      },
+      "2": {
+        "param_bpp": 2.0,
+        "grad_bpp": 1.00019,
+        "opt_bpp": 6.00113,
+        "resident_bpp": 9.00132,
+        "peak_bpp": 11.00132,
+        "comm": 1.0
+      },
+      "4": {
+        "param_bpp": 2.0,
+        "grad_bpp": 0.50028,
+        "opt_bpp": 3.00169,
+        "resident_bpp": 5.50198,
+        "peak_bpp": 7.50198,
+        "comm": 1.5
+      },
+      "8": {
+        "param_bpp": 2.0,
+        "grad_bpp": 0.25033,
+        "opt_bpp": 1.50198,
+        "resident_bpp": 3.75231,
+        "peak_bpp": 5.75231,
+        "comm": 1.75
+      },
+      "16": {
+        "param_bpp": 2.0,
+        "grad_bpp": 0.12535,
+        "opt_bpp": 0.75212,
+        "resident_bpp": 2.87747,
+        "peak_bpp": 4.87747,
+        "comm": 1.875
+      },
+      "32": {
+        "param_bpp": 2.0,
+        "grad_bpp": 0.06286,
+        "opt_bpp": 0.37719,
+        "resident_bpp": 2.44005,
+        "peak_bpp": 4.44005,
+        "comm": 1.9375
+      },
+      "64": {
+        "param_bpp": 2.0,
+        "grad_bpp": 0.03162,
+        "opt_bpp": 0.18972,
+        "resident_bpp": 2.22134,
+        "peak_bpp": 4.22134,
+        "comm": 1.96875
+      },
+      "128": {
+        "param_bpp": 2.0,
+        "grad_bpp": 0.01581,
+        "opt_bpp": 0.09486,
+        "resident_bpp": 2.11067,
+        "peak_bpp": 4.11067,
+        "comm": 1.98438
+      },
+      "256": {
+        "param_bpp": 2.0,
+        "grad_bpp": 0.00791,
+        "opt_bpp": 0.04743,
+        "resident_bpp": 2.05534,
+        "peak_bpp": 4.05534,
+        "comm": 1.99219
+      },
+      "512": {
+        "param_bpp": 2.0,
+        "grad_bpp": 0.00414,
+        "opt_bpp": 0.02484,
+        "resident_bpp": 2.02899,
+        "peak_bpp": 4.02899,
+        "comm": 1.99609
+      },
+      "1024": {
+        "param_bpp": 2.0,
+        "grad_bpp": 0.00226,
+        "opt_bpp": 0.01355,
+        "resident_bpp": 2.01581,
+        "peak_bpp": 4.01581,
+        "comm": 1.99805
+      }
+    },
+    "z3": {
+      "1": {
+        "param_bpp": 2.0,
+        "grad_bpp": 2.0,
+        "opt_bpp": 12.0,
+        "resident_bpp": 16.0,
+        "peak_bpp": 18.0,
+        "comm": 0.0
+      },
+      "2": {
+        "param_bpp": 1.00019,
+        "grad_bpp": 1.00019,
+        "opt_bpp": 6.00113,
+        "resident_bpp": 8.00151,
+        "peak_bpp": 10.00151,
+        "comm": 1.5
+      },
+      "4": {
+        "param_bpp": 0.50028,
+        "grad_bpp": 0.50028,
+        "opt_bpp": 3.00169,
+        "resident_bpp": 4.00226,
+        "peak_bpp": 6.00226,
+        "comm": 2.25
+      },
+      "8": {
+        "param_bpp": 0.25033,
+        "grad_bpp": 0.25033,
+        "opt_bpp": 1.50198,
+        "resident_bpp": 2.00264,
+        "peak_bpp": 4.00264,
+        "comm": 2.625
+      },
+      "16": {
+        "param_bpp": 0.12535,
+        "grad_bpp": 0.12535,
+        "opt_bpp": 0.75212,
+        "resident_bpp": 1.00282,
+        "peak_bpp": 3.00282,
+        "comm": 2.8125
+      },
+      "32": {
+        "param_bpp": 0.06286,
+        "grad_bpp": 0.06286,
+        "opt_bpp": 0.37719,
+        "resident_bpp": 0.50292,
+        "peak_bpp": 2.50292,
+        "comm": 2.90625
+      },
+      "64": {
+        "param_bpp": 0.03162,
+        "grad_bpp": 0.03162,
+        "opt_bpp": 0.18972,
+        "resident_bpp": 0.25296,
+        "peak_bpp": 2.25296,
+        "comm": 2.95312
+      },
+      "128": {
+        "param_bpp": 0.01581,
+        "grad_bpp": 0.01581,
+        "opt_bpp": 0.09486,
+        "resident_bpp": 0.12648,
+        "peak_bpp": 2.12648,
+        "comm": 2.97656
+      },
+      "256": {
+        "param_bpp": 0.00791,
+        "grad_bpp": 0.00791,
+        "opt_bpp": 0.04743,
+        "resident_bpp": 0.06324,
+        "peak_bpp": 2.06324,
+        "comm": 2.98828
+      },
+      "512": {
+        "param_bpp": 0.00414,
+        "grad_bpp": 0.00414,
+        "opt_bpp": 0.02484,
+        "resident_bpp": 0.03313,
+        "peak_bpp": 2.03313,
+        "comm": 2.99414
+      },
+      "1024": {
+        "param_bpp": 0.00226,
+        "grad_bpp": 0.00226,
+        "opt_bpp": 0.01355,
+        "resident_bpp": 0.01807,
+        "peak_bpp": 2.01807,
+        "comm": 2.99707
+      }
+    }
+  }
+}
