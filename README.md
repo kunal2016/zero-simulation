@@ -1,7 +1,7 @@
 # Simulating ZeRO (ZeRO-0/1/2/3) on 32 Virtual GPUs — from scratch
 
-**Assignment 12** — build 32 virtual GPUs, run a demo model on them, and simulate
-the ZeRO memory-optimization stages (ZeRO-0/1/2/3) to show how **memory** and
+Build 32 virtual GPUs, run a demo model on them, and simulate the ZeRO
+memory-optimization stages (ZeRO-0/1/2/3) to show how **memory** and
 **computation/communication** change.
 
 **Author:** Kunal Sinha ([@kunal2016](https://github.com/kunal2016)) · **Live widget:** <https://zero-simulation.netlify.app/>
@@ -197,8 +197,7 @@ zero-simulation/
 ├── make_figures.py           # regenerates figures/*.png
 ├── test_sim.py               # correctness + memory + comm checks (prints the tables)
 ├── figures/                  # memory.png, comm.png, scaling.png, loss.png
-├── requirements.txt
-└── LICENSE
+└── requirements.txt
 ```
 
 The notebook is fully self-contained (all classes are defined in-cell); the `.py`
