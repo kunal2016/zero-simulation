@@ -130,7 +130,7 @@ on a single device.
 
 ---
 
-## What I understood by building this (not my agent)
+## What I understood by building this
 
 I wrote this so the concepts are demonstrated by construction, not asserted:
 
