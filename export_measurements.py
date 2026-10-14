@@ -23,10 +23,10 @@ def export(path="widget/data/measurements.json"):
         for si, key in enumerate(["z0", "z1", "z2", "z3"]):
             _, _, gpus = train(si, model, X, Y, N, 3)
             g = gpus[0]
-            param_b = g.store["param_fp16"].nbytes / P
-            grad_b = g.store["grad_fp16"].nbytes / P
-            opt_b = (g.store["master_fp32"].nbytes + g.store["m_fp32"].nbytes
-                     + g.store["v_fp32"].nbytes) / P
+            param_b = g.store["param"].nbytes / P
+            grad_b = g.store["grad"].nbytes / P
+            opt_b = (g.store["master"].nbytes + g.store["m"].nbytes
+                     + g.store["v"].nbytes) / P
             stages[key][str(N)] = {
                 "param_bpp": round(param_b, 5),                   # bytes / parameter
                 "grad_bpp":  round(grad_b, 5),

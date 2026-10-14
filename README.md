@@ -7,11 +7,15 @@ memory-optimization stages (ZeRO-0/1/2/3) to show how **memory** and
 **Author:** Kunal Sinha ([@kunal2016](https://github.com/kunal2016)) · **Live widget:** <https://zero-simulation.netlify.app/>
 
 This repository implements everything by hand — no DeepSpeed, no FSDP calls doing
-the work for me. The virtual GPUs are plain Python objects driven by CPU threads,
-each carrying a **byte-accurate memory ledger** and a **communication ledger**, so
-every number reported below is *measured from real array allocations*, not printed
-from a formula. A PyTorch section then reproduces the same accounting on real
-`torch` tensors with real autograd gradients.
+the work for me. The virtual GPUs are plain Python objects driven by CPU threads, and
+each one **genuinely owns** the arrays it is responsible for — its parameter copy, its
+gradient, and its slice of the Adam optimizer state (full for ZeRO-0, a shard for
+ZeRO-1/2/3) — and runs its **own** optimizer update on the data it holds. There is no
+central copy: each stage has its own step function, the collectives really move data
+between the GPU-owned arrays, and ZeRO-3 actually all-gathers the weights twice (once
+for the forward, once for the backward). So every number reported below is *measured
+from real array allocations*, not printed from a formula. A PyTorch section then
+reproduces the same accounting on real `torch` tensors with real autograd gradients.
 
 ---
 
@@ -148,10 +152,12 @@ I wrote this so the concepts are demonstrated by construction, not asserted:
    independently on 32 `torch.chunk` shards vs on the whole vector (`0.00e+00`).
 
 3. **The memory↔communication trade.** I implemented the three collectives
-   (`all_reduce`, `reduce_scatter`, `all_gather`) and charged each with the ring
-   cost model. That reproduces the paper's `2Ψ / 2Ψ / 2Ψ / 3Ψ` table: ZeRO-1/2 are
-   free wins; ZeRO-3 spends an extra parameter all-gather in the forward *and* in
-   the backward to make weights shardable.
+   (`all_reduce`, `reduce_scatter`, `all_gather`) so they actually move data between
+   the GPU-owned arrays, and charged each with the ring cost model. That reproduces
+   the paper's `2Ψ / 2Ψ / 2Ψ / 3Ψ` table: ZeRO-1/2 are free wins; ZeRO-3 *executes*
+   an extra parameter all-gather in the forward **and** again in the backward (the
+   weights are freed in between and re-materialized, exactly as the real algorithm
+   does) to make them shardable.
 
 4. **Compute is untouched.** Each virtual GPU runs exactly one forward+backward on
    its micro-batch in every stage — same FLOPs. ZeRO gives model-parallel-sized

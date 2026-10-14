@@ -1,150 +1,154 @@
 """
-Per-stage training steps for ZeRO-0/1/2/3 built on zero_sim.py.
+Per-stage ZeRO training steps built on zero_sim.py.
 
-Design contract that makes the demo trustworthy:
-  * The NUMERIC update is identical for every stage (same fp16 casting, same
-    fixed-order fp32 gradient accumulation, same elementwise Adam). Therefore
-    ZeRO-1/2/3 must reproduce the ZeRO-0 (baseline DDP) parameter trajectory
-    bit-for-bit -- they differ ONLY in where data lives and how much is moved.
-  * Each GPU's resident_bytes is set by build_layout() to the arrays that stage
-    actually keeps, so per-device memory equals the sum of real `.nbytes`.
-  * Communication is charged with the ring-algorithm cost so the per-step volume
-    reproduces the paper's 2*Psi / 2*Psi / 2*Psi / 3*Psi table.
+Each stage has its OWN step function with its OWN collective sequence, operating on the
+arrays the virtual GPUs actually own:
+
+  ZeRO-0  every GPU owns full param + full grad + full optimizer (all replicated);
+          gradients all-reduced; every GPU redundantly updates the full weights.
+  ZeRO-1  optimizer sharded; gradients reduce-scattered, each GPU updates its optimizer
+          shard, updated params all-gathered back to everyone.
+  ZeRO-2  + gradients sharded (only the shard is kept resident after reduce-scatter).
+  ZeRO-3  + parameters sharded; the full weights are all-gathered for the forward,
+          freed, and all-gathered AGAIN for the backward (two real collectives).
+
+Because the reduction is deterministic and Adam is elementwise, every stage reproduces
+the ZeRO-0 parameter trajectory exactly -- they differ only in memory and communication.
 """
 
 import numpy as np
-from concurrent.futures import ThreadPoolExecutor
-from zero_sim import VirtualGPU, FP16, FP32, make_shards, AdamShard, _ring_factor
+from zero_sim import (VirtualGPU, FP16, FP32, make_shards,
+                      all_reduce, reduce_scatter, all_gather,
+                      adam_update, compute_grads)
 
 STAGE_NAMES = {0: "ZeRO-0 (baseline DDP)", 1: "ZeRO-1 (Pos)",
                2: "ZeRO-2 (Pos+g)", 3: "ZeRO-3 (Pos+g+p)"}
+EB = 2   # fp16 bytes per element -> communication is measured in fp16 bytes
 
 
-def build_layout(stage, gpus, P, shards):
-    """Materialize each GPU's PERSISTENT tensors so resident_bytes is byte-honest."""
+def init_gpus(stage, model, shards):
+    """Create N GPUs and give each the REAL arrays it owns for this stage."""
+    n, P, init = len(shards), model.P, model.init_flat
+    gpus = [VirtualGPU(i) for i in range(n)]
     for i, g in enumerate(gpus):
-        for name in list(g.store):     # clear
-            g.free(name)
         s = shards[i]
         ss = s.stop - s.start
-        opt = ss                        # optimizer states are sharded in 1/2/3
-        if stage == 0:                  # everything replicated
-            g.put('param_fp16', np.zeros(P, FP16))
-            g.put('grad_fp16',  np.zeros(P, FP16))
-            g.put('master_fp32', np.zeros(P, FP32))
-            g.put('m_fp32', np.zeros(P, FP32))
-            g.put('v_fp32', np.zeros(P, FP32))
-        elif stage == 1:                # shard optimizer states only
-            g.put('param_fp16', np.zeros(P, FP16))
-            g.put('grad_fp16',  np.zeros(P, FP16))
-            g.put('master_fp32', np.zeros(opt, FP32))
-            g.put('m_fp32', np.zeros(opt, FP32))
-            g.put('v_fp32', np.zeros(opt, FP32))
-        elif stage == 2:                # + shard gradients
-            g.put('param_fp16', np.zeros(P, FP16))
-            g.put('grad_fp16',  np.zeros(ss, FP16))
-            g.put('master_fp32', np.zeros(opt, FP32))
-            g.put('m_fp32', np.zeros(opt, FP32))
-            g.put('v_fp32', np.zeros(opt, FP32))
-        elif stage == 3:                # + shard parameters -> everything sharded
-            g.put('param_fp16', np.zeros(ss, FP16))
-            g.put('grad_fp16',  np.zeros(ss, FP16))
-            g.put('master_fp32', np.zeros(opt, FP32))
-            g.put('m_fp32', np.zeros(opt, FP32))
-            g.put('v_fp32', np.zeros(opt, FP32))
+        if stage == 0:                                   # everything replicated
+            g.put('param',  init.astype(FP16).copy())
+            g.put('grad',   np.zeros(P, FP16))
+            g.put('master', init.copy())
+            g.put('m', np.zeros(P, FP32)); g.put('v', np.zeros(P, FP32))
+        elif stage == 1:                                 # shard optimizer only
+            g.put('param',  init.astype(FP16).copy())
+            g.put('grad',   np.zeros(P, FP16))
+            g.put('master', init[s].copy())
+            g.put('m', np.zeros(ss, FP32)); g.put('v', np.zeros(ss, FP32))
+        elif stage == 2:                                 # + shard gradients
+            g.put('param',  init.astype(FP16).copy())
+            g.put('grad',   np.zeros(ss, FP16))
+            g.put('master', init[s].copy())
+            g.put('m', np.zeros(ss, FP32)); g.put('v', np.zeros(ss, FP32))
+        else:                                            # stage 3: shard everything
+            g.put('param',  init[s].astype(FP16).copy())
+            g.put('grad',   np.zeros(ss, FP16))
+            g.put('master', init[s].copy())
+            g.put('m', np.zeros(ss, FP32)); g.put('v', np.zeros(ss, FP32))
+    return gpus
 
 
-def _accum_fp32(grad_fp16_list):
-    """Sum per-GPU fp16 gradients in fixed rank order, accumulating in fp32."""
-    total = np.zeros_like(grad_fp16_list[0], dtype=FP32)
-    for g in grad_fp16_list:
-        total = total + g.astype(FP32)
-    return total
+def full_master(stage, gpus):
+    """Reconstruct the full fp32 weight vector from whatever the GPUs own."""
+    if stage == 0:
+        return gpus[0].store['master'].copy()            # replicated
+    return np.concatenate([g.store['master'] for g in gpus])  # sharded
 
 
-def init_state(model, shards):
-    return {
-        'master': model.init_flat.copy(),                        # authoritative fp32
-        'adam': [AdamShard(s.stop - s.start) for s in shards],   # sharded optimizer
-    }
+# ---------------------------------------------------------------------- per-stage steps
+def step_z0(gpus, model, shards, batches, t, total):
+    # Replicated params: each GPU uses its own copy (identical). Forward == backward copy.
+    fwd = [g.store['param'] for g in gpus]
+    sse, grads = compute_grads(gpus, model, fwd, fwd, batches)
+    for i, g in enumerate(gpus):
+        g.store['grad'][...] = grads[i]                  # full gradient resident
+    reduced = all_reduce(gpus, 'grad', EB)               # 2*Psi; full grad on every GPU
+    for g in gpus:                                       # every GPU redundantly updates
+        adam_update(g.store['master'], g.store['m'], g.store['v'], reduced, t)
+        g.store['param'][...] = g.store['master'].astype(FP16)
+    return sum(sse) / total
 
 
-def run_step(stage, gpus, model, shards, state, batches, total_samples):
-    n = len(gpus)
-    P = model.P
-    ELEM = 2                                  # fp16 bytes -> Psi is measured in fp16 bytes
-    Psi = P * ELEM
+def step_z1(gpus, model, shards, batches, t, total):
+    fwd = [g.store['param'] for g in gpus]
+    sse, grads = compute_grads(gpus, model, fwd, fwd, batches)
+    for i, g in enumerate(gpus):
+        g.store['grad'][...] = grads[i]                  # full gradient resident (2*Psi)
+    gshard = reduce_scatter(grads, shards, gpus, EB)     # Psi; each GPU gets its shard
+    for i, g in enumerate(gpus):                         # update owned optimizer shard
+        adam_update(g.store['master'], g.store['m'], g.store['v'], gshard[i], t)
+    new_slices = [g.store['master'].astype(FP16) for g in gpus]
+    full = all_gather(new_slices, gpus, EB)              # Psi; refresh full params
+    for g in gpus:
+        g.store['param'][...] = full
+    return sum(sse) / total
 
-    params_fp16 = state['master'].astype(FP16)
 
-    # ZeRO-3 keeps only a param shard resident; reconstruct the full vector to compute.
-    if stage == 3:
-        param_shards = [params_fp16[s].copy() for s in shards]
-        for g in gpus:                        # forward all-gather of params  (Psi)
-            g.add_comm(_ring_factor(n) * P * ELEM)
-            g.touch_transient(P * ELEM)       # transient full-param buffer
-        for g in gpus:                        # backward re-gather of params  (Psi)
-            g.add_comm(_ring_factor(n) * P * ELEM)
-        compute_params = np.concatenate(param_shards)
-    else:
-        compute_params = params_fp16
+def step_z2(gpus, model, shards, batches, t, total):
+    fwd = [g.store['param'] for g in gpus]
+    sse, grads = compute_grads(gpus, model, fwd, fwd, batches)
+    for g in gpus:
+        g.touch_transient(model.P * EB)                  # full grad exists transiently
+    gshard = reduce_scatter(grads, shards, gpus, EB)     # Psi; keep only the shard
+    for i, g in enumerate(gpus):
+        g.store['grad'][...] = gshard[i].astype(FP16)    # gradient shard resident
+        adam_update(g.store['master'], g.store['m'], g.store['v'], gshard[i], t)
+    new_slices = [g.store['master'].astype(FP16) for g in gpus]
+    full = all_gather(new_slices, gpus, EB)              # Psi; refresh full params
+    for g in gpus:
+        g.store['param'][...] = full
+    return sum(sse) / total
 
-    # Each virtual GPU computes its micro-batch gradient -- run on CPU threads.
-    def work(i):
-        Xi, Yi = batches[i]
-        sse, grad = model.forward_backward(compute_params, Xi, Yi)
-        return sse, grad.astype(FP16)         # gradients live in fp16 (2 bytes)
 
-    with ThreadPoolExecutor(max_workers=min(n, 8)) as ex:
-        results = list(ex.map(work, range(n)))
-    sse_list = [r[0] for r in results]
-    grad_fp16 = [r[1] for r in results]
+def step_z3(gpus, model, shards, batches, t, total):
+    # Parameters are sharded. Gather the full weights for the FORWARD, free them, then
+    # gather AGAIN for the BACKWARD -- two real all-gathers, exactly as ZeRO-3 does.
+    pshards = [g.store['param'] for g in gpus]
+    params_fwd = all_gather(pshards, gpus, EB)           # Psi (forward)
+    for g in gpus:
+        g.touch_transient(model.P * EB)
+    params_bwd = all_gather(pshards, gpus, EB)           # Psi (backward) -- executed
+    for g in gpus:
+        g.touch_transient(model.P * EB)
+    fwd = [params_fwd for _ in gpus]
+    bwd = [params_bwd for _ in gpus]
+    sse, grads = compute_grads(gpus, model, fwd, bwd, batches)
+    del params_fwd, params_bwd                           # full params discarded
+    for g in gpus:
+        g.touch_transient(model.P * EB)                  # full grad transient
+    gshard = reduce_scatter(grads, shards, gpus, EB)     # Psi
+    for i, g in enumerate(gpus):
+        g.store['grad'][...] = gshard[i].astype(FP16)
+        adam_update(g.store['master'], g.store['m'], g.store['v'], gshard[i], t)
+        g.store['param'][...] = g.store['master'].astype(FP16)   # own param shard
+    return sum(sse) / total
 
-    # Gradient reduction + communication charge (per stage)
-    if stage == 0:                            # all-reduce full gradients        (2*Psi)
-        for g in gpus:
-            g.add_comm(2 * _ring_factor(n) * P * ELEM)
-    elif stage == 1:                          # reduce-scatter grads             (Psi)
-        for g in gpus:
-            g.add_comm(_ring_factor(n) * P * ELEM)
-    else:                                     # stage 2 & 3: grads sharded
-        for g in gpus:
-            g.touch_transient(P * ELEM)       # transient full grad during backward
-            g.add_comm(_ring_factor(n) * P * ELEM)   # reduce-scatter grads      (Psi)
 
-    reduced_full = _accum_fp32(grad_fp16)     # identical for every stage
-    reduced_slices = [reduced_full[s] for s in shards]
-
-    # Sharded Adam step: GPU i updates only its slice of the master weights.
-    for i, s in enumerate(shards):
-        state['adam'][i].step(state['master'][s], reduced_slices[i])
-
-    # Parameter refresh after the update (all-gather).  Stage 0 needs none;
-    # stage 3 already paid 2*Psi of param gather above.
-    if stage in (1, 2):                       # all-gather updated params        (Psi)
-        for g in gpus:
-            g.add_comm(_ring_factor(n) * P * ELEM)
-
-    return sum(sse_list) / total_samples
+STEP_FN = {0: step_z0, 1: step_z1, 2: step_z2, 3: step_z3}
 
 
 def make_batches(X, Y, n):
-    """Split the global batch into n micro-batches, one per virtual GPU."""
     idx = np.array_split(np.arange(X.shape[0]), n)
     return [(X[i], Y[i]) for i in idx]
 
 
 def train(stage, model, X, Y, n_gpus, steps):
-    """Full training run for one ZeRO stage. Returns (loss_hist, final_master, gpus)."""
+    """Full run for one stage. Returns (loss_hist, reconstructed_full_master, gpus)."""
     shards = make_shards(model.P, n_gpus)
-    gpus = [VirtualGPU(i) for i in range(n_gpus)]
-    build_layout(stage, gpus, model.P, shards)
-    state = init_state(model, shards)
+    gpus = init_gpus(stage, model, shards)
     batches = make_batches(X, Y, n_gpus)
-    loss_hist = []
-    for step in range(steps):
+    step = STEP_FN[stage]
+    hist = []
+    for t in range(1, steps + 1):
         for g in gpus:
-            g.reset_comm()                    # keep only the most recent step's volume
-        loss = run_step(stage, gpus, model, shards, state, batches, X.shape[0])
-        loss_hist.append(loss)
-    return np.array(loss_hist), state['master'].copy(), gpus
+            g.reset_comm()                               # keep only the latest step
+        hist.append(step(gpus, model, shards, batches, t, X.shape[0]))
+    return np.array(hist), full_master(stage, gpus), gpus

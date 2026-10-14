@@ -1,6 +1,6 @@
 import numpy as np
 from zero_sim import FlatMLP, make_shards
-from zero_stages import train, build_layout, init_state, STAGE_NAMES, VirtualGPU
+from zero_stages import train, STAGE_NAMES
 
 np.random.seed(0)
 N_GPUS = 32

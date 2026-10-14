@@ -1,10 +1,12 @@
 """
 ZeRO from scratch: a byte-honest NumPy simulation of ZeRO-0/1/2/3 across N virtual GPUs.
 
-The point of this module is *not* speed. It is to make the memory that each ZeRO
-stage keeps resident on a device literally equal to the sum of `.nbytes` of the
-arrays that device stores -- so the famous 16-byte-per-parameter accounting from
-the ZeRO paper falls out of real allocations instead of a formula.
+Each VirtualGPU genuinely *owns* the arrays it is responsible for -- its parameter
+copy, its gradient, and its slice of the Adam optimizer state -- and runs its own
+optimizer update on the data it holds. Nothing lives in a central place: ZeRO-1/2/3
+differ from the baseline precisely because the arrays each GPU stores (and the
+collectives that move them) differ. So the per-device memory a stage reports is the
+sum of `.nbytes` of the arrays that device actually holds.
 
 Precision layout (mixed-precision Adam), per parameter Psi:
     fp16 parameter copy        2 bytes   (used for forward/backward compute)
@@ -24,17 +26,15 @@ FP32 = np.float32   # 4 bytes/elem
 
 
 # --------------------------------------------------------------------------------------
-# Memory + communication ledgers
+# A virtual GPU: owns real arrays + a byte-accurate ledger of what it stores
 # --------------------------------------------------------------------------------------
 class VirtualGPU:
-    """One simulated GPU. Holds arrays and a byte-accurate ledger of what it stores."""
-
     def __init__(self, rank):
         self.rank = rank
-        self.store = {}          # name -> ndarray (the real data)
+        self.store = {}          # name -> ndarray  (the REAL data this GPU owns)
         self.resident_bytes = 0  # bytes currently held
         self.peak_bytes = 0      # high-water mark incl. transient buffers
-        self.comm_bytes = 0      # bytes moved in/out of this GPU per measured window
+        self.comm_bytes = 0      # bytes moved in/out of this GPU per measured step
 
     def put(self, name, arr):
         if name in self.store:
@@ -48,7 +48,7 @@ class VirtualGPU:
             self.resident_bytes -= self.store.pop(name).nbytes
 
     def touch_transient(self, nbytes):
-        """Account for a temporary buffer (e.g. an all-gather reconstruction)."""
+        """Account for a temporary buffer (an all-gather / reduce-scatter staging area)."""
         self.peak_bytes = max(self.peak_bytes, self.resident_bytes + nbytes)
 
     def reset_comm(self):
@@ -59,47 +59,50 @@ class VirtualGPU:
 
 
 # --------------------------------------------------------------------------------------
-# Collective communication primitives (with ring-algorithm cost accounting)
+# Collective communication primitives -- they really move data between GPU-owned arrays
 # --------------------------------------------------------------------------------------
-# For a message of M elements across N ranks, the ring algorithm moves, PER rank:
-#   all_reduce      : 2 * (N-1)/N * M   (reduce-scatter phase + all-gather phase)
+# Ring-algorithm cost, PER rank, for a message of M elements across N ranks:
+#   all_reduce      : 2 * (N-1)/N * M
 #   reduce_scatter  :     (N-1)/N * M
 #   all_gather      :     (N-1)/N * M
-# We accumulate the reduction in fp32 for determinism (identical across all stages),
-# but the *stored* gradient tensors keep their fp16 footprint.
+# The reduction is accumulated in fp32 in fixed rank order -> deterministic, so every
+# stage gets bit-identical reduced values (this is what lets us prove exact equality).
 
-def _ring_factor(n):
+def _ring(n):
     return (n - 1) / n
 
-def all_reduce_sum(gpus, name, elem_bytes):
-    """Every GPU ends with the fp32 sum of `name` across all GPUs. Returns the sum."""
-    n = len(gpus)
+
+def all_reduce(gpus, name, elem_bytes):
+    """Sum `name` across all GPUs; leave the full fp32 sum resident on every GPU's
+    `name` buffer (cast back to that buffer's dtype). Returns the fp32 sum."""
     total = np.zeros_like(gpus[0].store[name], dtype=FP32)
-    for g in gpus:                       # fixed rank order -> deterministic
-        total = total + gpus[g.rank].store[name].astype(FP32)
+    for g in gpus:                                  # fixed rank order
+        total = total + g.store[name].astype(FP32)
     m = total.size
     for g in gpus:
-        g.add_comm(2 * _ring_factor(n) * m * elem_bytes)
+        g.add_comm(2 * _ring(len(gpus)) * m * elem_bytes)
+        g.store[name][...] = total.astype(g.store[name].dtype)
     return total
 
-def reduce_scatter_sum(gpus, name, shards, elem_bytes):
-    """GPU s ends with the fp32 sum over GPUs of `name` restricted to its shard slice."""
-    n = len(gpus)
-    total = np.zeros_like(gpus[0].store[name], dtype=FP32)
-    for g in gpus:
-        total = total + gpus[g.rank].store[name].astype(FP32)
+
+def reduce_scatter(full_arrays, shards, gpus, elem_bytes):
+    """Sum per-GPU full arrays, then hand each GPU only its shard slice (fp32).
+    `full_arrays` is one full-length array per GPU (e.g. the just-computed gradient)."""
+    total = np.zeros_like(full_arrays[0], dtype=FP32)
+    for a in full_arrays:                           # fixed rank order
+        total = total + a.astype(FP32)
     m = total.size
     for g in gpus:
-        g.add_comm(_ring_factor(n) * m * elem_bytes)
-    return [total[s] for s in shards]    # one slice per GPU
+        g.add_comm(_ring(len(gpus)) * m * elem_bytes)
+    return [total[s] for s in shards]               # one fp32 shard per GPU
 
-def all_gather(gpus, shard_arrays, elem_bytes):
-    """Concatenate per-GPU shards into the full vector; every GPU 'receives' it."""
-    n = len(gpus)
+
+def all_gather(shard_arrays, gpus, elem_bytes):
+    """Concatenate each GPU's shard into the full vector; every GPU receives it."""
     full = np.concatenate(shard_arrays)
     m = full.size
     for g in gpus:
-        g.add_comm(_ring_factor(n) * m * elem_bytes)
+        g.add_comm(_ring(len(gpus)) * m * elem_bytes)
     return full
 
 
@@ -114,15 +117,15 @@ def make_shards(P, n):
 
 
 # --------------------------------------------------------------------------------------
-# Demo model: a flat-parameter MLP for regression (real forward/backward)
+# Demo model: a flat-parameter MLP with SEPARATE forward and backward
+# (separate so ZeRO-3 can gather params for the forward, free them, and gather AGAIN
+#  for the backward -- two real collective operations, as the real algorithm does.)
 # --------------------------------------------------------------------------------------
 class FlatMLP:
-    """MLP whose parameters live in ONE flat vector, so ZeRO can shard them trivially."""
-
     def __init__(self, sizes, seed=0):
         self.sizes = sizes
         rng = np.random.default_rng(seed)
-        self.shapes, self.P = [], 0
+        self.shapes = []
         params = []
         for a, b in zip(sizes[:-1], sizes[1:]):
             W = (rng.standard_normal((a, b)) * np.sqrt(2.0 / a)).astype(FP32)
@@ -143,56 +146,66 @@ class FlatMLP:
             i += n
         return out
 
-    def forward_backward(self, flat_params, X, Y):
-        """Return (sum_of_squared_error, flat_gradient) for one micro-batch.
-        Compute is done in fp32 on the fp16->fp32 upcast params (as real AMP does).
-        Gradient is the SUM over samples (not mean) so per-GPU grads add up to the
-        full-batch gradient exactly."""
+    def forward(self, flat_params, X):
+        """Run the forward pass; return a cache the backward pass will consume."""
         p = self._unpack(flat_params.astype(FP32))
-        Ws = p[0::2]; bs = p[1::2]
+        Ws, bs = p[0::2], p[1::2]
         acts = [X.astype(FP32)]
-        pre = []
-        h = acts[0]
-        L = len(Ws)
+        pre, h, L = [], X.astype(FP32), len(Ws)
         for l in range(L):
             z = h @ Ws[l] + bs[l]
             pre.append(z)
             h = np.maximum(z, 0.0) if l < L - 1 else z   # ReLU except last layer
             acts.append(h)
-        pred = acts[-1]
-        diff = pred - Y.astype(FP32)
+        return {"acts": acts, "pre": pre, "pred": acts[-1]}
+
+    def backward(self, flat_params, cache, Y):
+        """Backward pass -- genuinely needs the parameters (to propagate deltas), so
+        ZeRO-3 must have re-gathered them. Returns (sum_of_squared_error, flat_grad)."""
+        p = self._unpack(flat_params.astype(FP32))
+        Ws = p[0::2]
+        acts, pre = cache["acts"], cache["pre"]
+        L = len(Ws)
+        diff = acts[-1] - Y.astype(FP32)
         sse = float(np.sum(diff ** 2))
-        # backward (gradient of sum-of-squared-error)
-        grads_W = [None] * L; grads_b = [None] * L
-        delta = 2.0 * diff
+        gW, gb, delta = [None] * L, [None] * L, 2.0 * diff
         for l in reversed(range(L)):
-            grads_W[l] = acts[l].T @ delta
-            grads_b[l] = delta.sum(axis=0)
+            gW[l] = acts[l].T @ delta
+            gb[l] = delta.sum(axis=0)
             if l > 0:
-                dh = delta @ Ws[l].T
-                delta = dh * (pre[l - 1] > 0)
+                delta = (delta @ Ws[l].T) * (pre[l - 1] > 0)
         packed = []
         for l in range(L):
-            packed += [grads_W[l], grads_b[l]]
+            packed += [gW[l], gb[l]]
         return sse, self._pack(packed)
 
+    def forward_backward(self, flat_params, X, Y):
+        """Convenience wrapper (one param copy for both passes)."""
+        cache = self.forward(flat_params, X)
+        return self.backward(flat_params, cache, Y)
+
 
 # --------------------------------------------------------------------------------------
-# Adam (operates elementwise on fp32 master params) -- identical math for every stage
+# Adam update -- a pure, in-place step that each GPU runs on the slice IT owns.
+# Elementwise, so a per-shard update equals the global update restricted to that slice.
 # --------------------------------------------------------------------------------------
-class AdamShard:
-    """Adam state for ONE shard slice. Elementwise, so per-shard == global-on-slice."""
-    def __init__(self, size, lr=1e-2, betas=(0.9, 0.999), eps=1e-8):
-        self.lr, (self.b1, self.b2), self.eps = lr, betas, eps
-        self.t = 0
-        self.m = np.zeros(size, FP32)
-        self.v = np.zeros(size, FP32)
+def adam_update(master, m, v, grad_fp32, t, lr=1e-2, b1=0.9, b2=0.999, eps=1e-8):
+    m[...] = b1 * m + (1 - b1) * grad_fp32
+    v[...] = b2 * v + (1 - b2) * (grad_fp32 ** 2)
+    mhat = m / (1 - b1 ** t)
+    vhat = v / (1 - b2 ** t)
+    master -= lr * mhat / (np.sqrt(vhat) + eps)
 
-    def step(self, master, grad_fp32):
-        self.t += 1
-        self.m = self.b1 * self.m + (1 - self.b1) * grad_fp32
-        self.v = self.b2 * self.v + (1 - self.b2) * (grad_fp32 ** 2)
-        mhat = self.m / (1 - self.b1 ** self.t)
-        vhat = self.v / (1 - self.b2 ** self.t)
-        master -= self.lr * mhat / (np.sqrt(vhat) + self.eps)
-        return master
+
+def compute_grads(gpus, model, fwd_params, bwd_params, batches):
+    """Each GPU computes its micro-batch gradient on its own CPU thread.
+    fwd_params[i]/bwd_params[i] are the parameter copies GPU i uses for the forward and
+    backward passes (identical values; distinct objects for ZeRO-3's two gathers)."""
+    def work(i):
+        Xi, Yi = batches[i]
+        cache = model.forward(fwd_params[i], Xi)
+        sse, grad = model.backward(bwd_params[i], cache, Yi)
+        return sse, grad.astype(FP16)
+    with ThreadPoolExecutor(max_workers=min(len(gpus), 8)) as ex:
+        results = list(ex.map(work, range(len(gpus))))
+    return [r[0] for r in results], [r[1] for r in results]
