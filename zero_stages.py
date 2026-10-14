@@ -19,7 +19,7 @@ the ZeRO-0 parameter trajectory exactly -- they differ only in memory and commun
 import numpy as np
 from zero_sim import (VirtualGPU, FP16, FP32, make_shards,
                       all_reduce, reduce_scatter, all_gather,
-                      adam_update, compute_grads)
+                      adam_update, compute_grads, run_forward, run_backward)
 
 STAGE_NAMES = {0: "ZeRO-0 (baseline DDP)", 1: "ZeRO-1 (Pos)",
                2: "ZeRO-2 (Pos+g)", 3: "ZeRO-3 (Pos+g+p)"}
@@ -109,21 +109,22 @@ def step_z2(gpus, model, shards, batches, t, total):
 
 
 def step_z3(gpus, model, shards, batches, t, total):
-    # Parameters are sharded. Gather the full weights for the FORWARD, free them, then
-    # gather AGAIN for the BACKWARD -- two real all-gathers, exactly as ZeRO-3 does.
+    # Parameters are sharded, so the full weights exist only transiently. The real
+    # ZeRO-3 order: gather -> forward -> FREE -> gather -> backward -> FREE, so only one
+    # full copy is ever alive (hence a peak of one full buffer above the resident shards).
     pshards = [g.store['param'] for g in gpus]
-    params_fwd = all_gather(pshards, gpus, EB)           # Psi (forward)
-    for g in gpus:
-        g.touch_transient(model.P * EB)
-    params_bwd = all_gather(pshards, gpus, EB)           # Psi (backward) -- executed
-    for g in gpus:
-        g.touch_transient(model.P * EB)
-    fwd = [params_fwd for _ in gpus]
-    bwd = [params_bwd for _ in gpus]
-    sse, grads = compute_grads(gpus, model, fwd, bwd, batches)
-    del params_fwd, params_bwd                           # full params discarded
-    for g in gpus:
-        g.touch_transient(model.P * EB)                  # full grad transient
+
+    params = all_gather(pshards, gpus, EB)               # Psi  (gather for FORWARD)
+    for g in gpus: g.touch_transient(model.P * EB)
+    caches = run_forward(gpus, model, [params]*len(gpus), batches)
+    del params                                           # free the full weights
+
+    params = all_gather(pshards, gpus, EB)               # Psi  (gather AGAIN for BACKWARD)
+    for g in gpus: g.touch_transient(model.P * EB)
+    sse, grads = run_backward(gpus, model, [params]*len(gpus), caches, batches)
+    del params                                           # free again
+
+    for g in gpus: g.touch_transient(model.P * EB)       # full grad transient
     gshard = reduce_scatter(grads, shards, gpus, EB)     # Psi
     for i, g in enumerate(gpus):
         g.store['grad'][...] = gshard[i].astype(FP16)

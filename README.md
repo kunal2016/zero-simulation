@@ -11,10 +11,14 @@ the work for me. The virtual GPUs are plain Python objects driven by CPU threads
 each one **genuinely owns** the arrays it is responsible for — its parameter copy, its
 gradient, and its slice of the Adam optimizer state (full for ZeRO-0, a shard for
 ZeRO-1/2/3) — and runs its **own** optimizer update on the data it holds. There is no
-central copy: each stage has its own step function, the collectives really move data
-between the GPU-owned arrays, and ZeRO-3 actually all-gathers the weights twice (once
-for the forward, once for the backward). So every number reported below is *measured
-from real array allocations*, not printed from a formula. A PyTorch section then
+central optimizer copy, and each stage has its own step function. ZeRO-3 actually
+all-gathers the weights twice — gather → forward → **free** → gather → backward → free
+— so only one full copy is ever alive at a time. (Honest caveat: the *training state*
+is owned per GPU, but the *collectives* are **simulated centrally** — one process
+computes the sum/concatenation and hands the result back — then charged at ring cost;
+they reproduce the communication *volume*, not a real network transfer.) So every
+number reported below is *measured from real array allocations*, not printed from a
+formula. A PyTorch section then
 reproduces the same accounting on real `torch` tensors with real autograd gradients.
 
 ---
@@ -154,11 +158,11 @@ I wrote this so the concepts are demonstrated by construction, not asserted:
 3. **The memory↔communication trade.** I implemented the three collectives
    (`all_reduce`, `reduce_scatter`, `all_gather`) so they actually move data between
    the GPU-owned arrays, and charged each with the ring cost model. That reproduces
-   the paper's `2Ψ / 2Ψ / 2Ψ / 3Ψ` table: ZeRO-1/2 are free wins; ZeRO-3 *executes*
-   a real parameter all-gather for the forward **and** a second one for the backward,
-   and the backward pass genuinely consumes the re-gathered weights. (In production the
-   forward copy is freed before the backward re-gather; this flat demo runs the two
-   gathers back-to-back and charges the peak as a single full-model buffer.)
+   the paper's `2Ψ / 2Ψ / 2Ψ / 3Ψ` table: ZeRO-1/2 are free wins; ZeRO-3 *executes* a
+   real parameter all-gather for the forward, **frees** the weights, and gathers again
+   for the backward (gather → forward → free → gather → backward → free). Only one full
+   copy is alive at a time, so the reported peak (**2.50 B/param**) is honest, and the
+   backward genuinely consumes the re-gathered weights.
 
 4. **Compute is untouched.** Each virtual GPU runs exactly one forward+backward on
    its micro-batch in every stage — same FLOPs. ZeRO gives model-parallel-sized

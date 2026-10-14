@@ -3,10 +3,16 @@ ZeRO from scratch: a byte-honest NumPy simulation of ZeRO-0/1/2/3 across N virtu
 
 Each VirtualGPU genuinely *owns* the arrays it is responsible for -- its parameter
 copy, its gradient, and its slice of the Adam optimizer state -- and runs its own
-optimizer update on the data it holds. Nothing lives in a central place: ZeRO-1/2/3
-differ from the baseline precisely because the arrays each GPU stores (and the
-collectives that move them) differ. So the per-device memory a stage reports is the
-sum of `.nbytes` of the arrays that device actually holds.
+optimizer update on the data it holds. ZeRO-1/2/3 differ from the baseline precisely
+because the arrays each GPU stores differ, so the per-device memory a stage reports is
+the sum of `.nbytes` of the arrays that device actually holds.
+
+Honest scope note: the *training state* is owned per GPU, but the *collectives*
+(`all_reduce` / `reduce_scatter` / `all_gather`) are **simulated centrally** -- one
+Python process computes the sum or concatenation and hands the result back -- and then
+charged at ring-algorithm cost. This is a single-machine model of the communication,
+not a real networked transfer; what it faithfully reproduces is the memory layout and
+the communication *volume*, not bandwidth or latency.
 
 Precision layout (mixed-precision Adam), per parameter Psi:
     fp16 parameter copy        2 bytes   (used for forward/backward compute)
@@ -197,15 +203,29 @@ def adam_update(master, m, v, grad_fp32, t, lr=1e-2, b1=0.9, b2=0.999, eps=1e-8)
     master -= lr * mhat / (np.sqrt(vhat) + eps)
 
 
-def compute_grads(gpus, model, fwd_params, bwd_params, batches):
-    """Each GPU computes its micro-batch gradient on its own CPU thread.
-    fwd_params[i]/bwd_params[i] are the parameter copies GPU i uses for the forward and
-    backward passes (identical values; distinct objects for ZeRO-3's two gathers)."""
+def run_forward(gpus, model, fwd_params, batches):
+    """Forward phase only: each GPU runs its micro-batch forward on its own thread and
+    keeps a cache for the backward. `fwd_params[i]` is GPU i's parameter copy."""
     def work(i):
-        Xi, Yi = batches[i]
-        cache = model.forward(fwd_params[i], Xi)
-        sse, grad = model.backward(bwd_params[i], cache, Yi)
+        return model.forward(fwd_params[i], batches[i][0])
+    with ThreadPoolExecutor(max_workers=min(len(gpus), 8)) as ex:
+        return list(ex.map(work, range(len(gpus))))
+
+
+def run_backward(gpus, model, bwd_params, caches, batches):
+    """Backward phase only: each GPU runs its backward using the caches from the forward
+    and `bwd_params[i]` (which ZeRO-3 has re-gathered). Returns (sse_list, grad_list)."""
+    def work(i):
+        sse, grad = model.backward(bwd_params[i], caches[i], batches[i][1])
         return sse, grad.astype(FP16)
     with ThreadPoolExecutor(max_workers=min(len(gpus), 8)) as ex:
-        results = list(ex.map(work, range(len(gpus))))
-    return [r[0] for r in results], [r[1] for r in results]
+        res = list(ex.map(work, range(len(gpus))))
+    return [r[0] for r in res], [r[1] for r in res]
+
+
+def compute_grads(gpus, model, fwd_params, bwd_params, batches):
+    """Convenience: forward then backward (one param copy held throughout). Used by the
+    stages that keep the full weights resident; ZeRO-3 instead calls the two phases
+    separately so it can free the gathered weights between them."""
+    caches = run_forward(gpus, model, fwd_params, batches)
+    return run_backward(gpus, model, bwd_params, caches, batches)
