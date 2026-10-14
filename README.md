@@ -155,9 +155,10 @@ I wrote this so the concepts are demonstrated by construction, not asserted:
    (`all_reduce`, `reduce_scatter`, `all_gather`) so they actually move data between
    the GPU-owned arrays, and charged each with the ring cost model. That reproduces
    the paper's `2Ψ / 2Ψ / 2Ψ / 3Ψ` table: ZeRO-1/2 are free wins; ZeRO-3 *executes*
-   an extra parameter all-gather in the forward **and** again in the backward (the
-   weights are freed in between and re-materialized, exactly as the real algorithm
-   does) to make them shardable.
+   a real parameter all-gather for the forward **and** a second one for the backward,
+   and the backward pass genuinely consumes the re-gathered weights. (In production the
+   forward copy is freed before the backward re-gather; this flat demo runs the two
+   gathers back-to-back and charges the peak as a single full-model buffer.)
 
 4. **Compute is untouched.** Each virtual GPU runs exactly one forward+backward on
    its micro-batch in every stage — same FLOPs. ZeRO gives model-parallel-sized

@@ -72,20 +72,29 @@ ax.set_ylim(0, 3.4)
 plt.tight_layout(); plt.savefig("figures/comm.png", bbox_inches="tight"); plt.close()
 
 # ---------------------------------------------------------------- Figure 3: scaling
+# MEASURED: run the simulation at each N and read each GPU's resident bytes/param.
 fig, ax = plt.subplots(figsize=(7.2, 4.3))
 Ns = np.array([1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024])
+labels = ["ZeRO-0 (DDP)", "ZeRO-1 (Pos)", "ZeRO-2 (Pos+g)", "ZeRO-3 (Pos+g+p)"]
+measured = {s: [] for s in range(4)}
+for n in Ns:
+    for s in range(4):
+        _, _, gps = train(s, model, X, Y, int(n), 2)       # 2 steps: memory is step-independent
+        measured[s].append(gps[0].resident_bytes / P)
 formulas = {0: lambda n: 16 + 0 * n, 1: lambda n: 4 + 12 / n,
             2: lambda n: 2 + 14 / n, 3: lambda n: 16 / n}
-labels = ["ZeRO-0 (DDP)", "ZeRO-1 (Pos)", "ZeRO-2 (Pos+g)", "ZeRO-3 (Pos+g+p)"]
-for s in range(4):
-    ax.plot(Ns, formulas[s](Ns), "-o", color=COLORS[s], lw=2, ms=4, label=labels[s], zorder=3)
+for s in range(4):                                           # faint analytic reference
+    ax.plot(Ns, formulas[s](Ns), color=COLORS[s], lw=1, ls=(0, (1, 2)), alpha=0.55, zorder=2)
+for s in range(4):                                           # measured points
+    ax.plot(Ns, measured[s], "-o", color=COLORS[s], lw=2, ms=4, label=labels[s], zorder=3)
 ax.axvline(32, color="#bbb", ls=":", lw=1)
 ax.text(32, 17, "N=32", color="#888", fontsize=9, ha="center")
 ax.set_xscale("log", base=2); ax.set_yscale("log")
 ax.set_xticks(Ns); ax.set_xticklabels([str(n) for n in Ns], fontsize=8)
 ax.set_xlabel("number of GPUs (N)")
 ax.set_ylabel("memory per GPU  (bytes / parameter)")
-ax.set_title("How per-GPU memory scales with the number of GPUs", fontweight="bold", loc="left")
+ax.set_title("How per-GPU memory scales with N  (measured; dotted = analytic)",
+             fontweight="bold", loc="left")
 ax.legend(frameon=False, fontsize=9)
 ax.grid(True, which="both")
 plt.tight_layout(); plt.savefig("figures/scaling.png", bbox_inches="tight"); plt.close()
